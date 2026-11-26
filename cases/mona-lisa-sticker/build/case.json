@@ -1,0 +1,9 @@
+{
+  "case_name": "mona-lisa-sticker",
+  "reference_path": "/home/jeremym/media/Storage/Dev/ImageModelShmimageModel/cases/mona-lisa-sticker/source/reference.jpg",
+  "size": 204,
+  "palette": "custom",
+  "colors": 43,
+  "target_w": 136,
+  "target_h": 204
+}

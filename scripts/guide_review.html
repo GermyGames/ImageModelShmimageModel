@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review pixel-art guides</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; color: #ebedf6; background: #171923; }
+  body { max-width: 1320px; margin: 1.5rem auto; padding: 0 1rem; }
+  [hidden] { display: none !important; }
+  body[data-review="template"] .generated, body[data-review="generated"] #template-help { display: none; }
+  h1 { font-size: 1.5rem; margin: 0 0 .35rem; }
+  p { color: #b8bdd0; margin: .5rem 0 1rem; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: .65rem; padding: .75rem 0; align-items: center; }
+  label { display: inline-flex; align-items: center; gap: .35rem; }
+  select, button { font: inherit; background: #262b3b; color: inherit; border: 1px solid #606781; border-radius: 5px; padding: .4rem .65rem; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  input { accent-color: #61e0e9; }
+  #show-details { accent-color: #ff965c; }
+  .views { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
+  figure { margin: 0; min-width: 0; }
+  figcaption { margin: 0 0 .45rem; font-weight: 600; }
+  .viewport { max-height: 67vh; overflow: auto; border: 1px solid #454b62; border-radius: 5px; background: #242938; }
+  #source { display: block; max-width: 100%; max-height: 66vh; margin: 0 auto; object-fit: contain; }
+  #static-grid, canvas { display: block; margin: auto; image-rendering: pixelated; background-color: #34384a; }
+  #static-grid { width: 100%; height: auto; object-fit: contain; max-height: 66vh; }
+  canvas { cursor: crosshair; touch-action: none; }
+  .legend { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .6rem; }
+  .ink { color: #55e4ef; } .detail { color: #ffa476; }
+  @media (max-width: 760px) { .views { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body data-review="template">
+<h1>Review pixel-art guides</h1>
+<p id="template-help">This file is the editor template. Run <code>python3 scripts/shmimage.py extract cases/&lt;case&gt;</code> on a prepared case, then open its <code>build/guides/review.html</code> in a browser.</p>
+<p class="generated">Keep the contours you want inked and mark details to protect during palette fitting and cleanup.</p>
+<p id="status" class="generated" role="status">Open this file in a browser with JavaScript enabled to edit the masks.</p>
+<div class="toolbar" id="editor-controls" hidden>
+  <label>Layer <select id="layer"><option value="lines">Line art</option><option value="details">Protected detail</option></select></label>
+  <label>Brush <select id="mode"><option value="1">Keep</option><option value="0">Erase</option></select></label>
+  <label>Size <select id="size"><option value="1">1 px</option><option value="3">3 px</option><option value="5">5 px</option></select></label>
+  <label>Zoom <select id="zoom"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="6">6×</option><option value="8">8×</option></select></label>
+  <label id="base-control" hidden>Underlay <select id="base"><option value="blockin">Color block-in</option><option value="aligned">Aligned reference</option></select></label>
+  <button id="undo" disabled>Undo</button>
+</div>
+<div class="views generated">
+  <figure>
+    <figcaption>Prepared source</figcaption>
+    <div class="viewport"><img id="source" alt="Prepared source reference"></div>
+  </figure>
+  <figure>
+    <figcaption id="grid-title">Guide preview</figcaption>
+    <div class="viewport" id="workspace">
+      <img id="static-grid" alt="Pixel grid with the line-art and detail guides overlaid">
+      <canvas id="grid" aria-label="Editable pixel-art guide masks" hidden></canvas>
+    </div>
+  </figure>
+</div>
+<div class="legend" id="editor-legend" hidden>
+  <label class="ink"><input id="show-lines" type="checkbox" checked>Show line art</label>
+  <label class="detail"><input id="show-details" type="checkbox" checked>Show protected detail</label>
+</div>
+<div class="toolbar generated" id="download-controls" hidden>
+  <button id="save-lines">Download line mask</button>
+  <button id="save-details">Download detail mask</button>
+</div>
+<script id="embedded" type="application/json">{}</script>
+<script>
+'use strict';
+async function initializeEditor() {
+  const $ = id => document.getElementById(id);
+  $('status').textContent = 'Loading the guide layers…';
+  const data = JSON.parse(document.getElementById('embedded').textContent);
+  const grid = $('grid');
+  const {width, height} = data;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
+    throw new Error('The case grid is missing or invalid.');
+  }
+  grid.width = width;
+  grid.height = height;
+  const ctx = grid.getContext('2d');
+  if (!ctx) throw new Error('The browser could not create a 2D canvas.');
+  const undoStack = [];
+  const maskColors = {lines: [52, 224, 234, 190], details: [255, 144, 86, 200]};
+  const masks = {};
+  const underlay = {};
+  let stroke = null;
+
+  function loadImage(url) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      const timer = setTimeout(() => reject(new Error('An embedded image did not load.')), 10000);
+      image.onload = () => {
+        clearTimeout(timer);
+        resolve(image);
+      };
+      image.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error('An embedded image could not be opened.'));
+      };
+      image.src = url;
+    });
+  }
+
+  function maskPixels(image) {
+    const layer = document.createElement('canvas');
+    layer.width = width;
+    layer.height = height;
+    const layerContext = layer.getContext('2d');
+    layerContext.drawImage(image, 0, 0);
+    const rgba = layerContext.getImageData(0, 0, width, height).data;
+    return Uint8Array.from({length: width * height}, (_, index) => rgba[index * 4] >= 128 ? 1 : 0);
+  }
+
+  const overlay = document.createElement('canvas');
+  overlay.width = width;
+  overlay.height = height;
+  const overlayContext = overlay.getContext('2d');
+
+  function redraw() {
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(underlay[$('base').value] || underlay.aligned, 0, 0);
+    for (const layer of ['lines', 'details']) {
+      if (!$('show-' + layer).checked) continue;
+      const pixels = overlayContext.createImageData(width, height);
+      for (let i = 0; i < masks[layer].length; i++) {
+        if (masks[layer][i]) pixels.data.set(maskColors[layer], i * 4);
+      }
+      overlayContext.putImageData(pixels, 0, 0);
+      ctx.drawImage(overlay, 0, 0);
+    }
+  }
+
+  function applyZoom() {
+    const zoom = Number($('zoom').value);
+    grid.style.width = width * zoom + 'px';
+    grid.style.height = height * zoom + 'px';
+  }
+
+  function gridPoint(event) {
+    const bounds = grid.getBoundingClientRect();
+    return [
+      Math.max(0, Math.min(width - 1, Math.floor((event.clientX - bounds.left) * width / bounds.width))),
+      Math.max(0, Math.min(height - 1, Math.floor((event.clientY - bounds.top) * height / bounds.height))),
+    ];
+  }
+
+  function brushAt(x, y) {
+    const radius = stroke.radius;
+    const mask = masks[stroke.layer];
+    for (let iy = Math.max(0, y - radius); iy <= Math.min(y + radius, height - 1); iy++) {
+      for (let ix = Math.max(0, x - radius); ix <= Math.min(x + radius, width - 1); ix++) {
+        mask[iy * width + ix] = stroke.value;
+      }
+    }
+  }
+
+  function drawBetween(from, to) {
+    let [x, y] = from;
+    const [xEnd, yEnd] = to;
+    const dx = Math.abs(xEnd - x), dy = -Math.abs(yEnd - y);
+    const stepX = x < xEnd ? 1 : -1, stepY = y < yEnd ? 1 : -1;
+    let error = dx + dy;
+    while (true) {
+      brushAt(x, y);
+      if (x === xEnd && y === yEnd) break;
+      const doubled = error * 2;
+      if (doubled >= dy) { error += dy; x += stepX; }
+      if (doubled <= dx) { error += dx; y += stepY; }
+    }
+  }
+
+  function startStroke(event) {
+    if (stroke || event.button !== 0) return;
+    event.preventDefault();
+    const layer = $('layer').value;
+    undoStack.push({layer, previous: masks[layer].slice()});
+    if (undoStack.length > 30) undoStack.shift();
+    $('undo').disabled = false;
+    $('show-' + layer).checked = true;
+    const point = gridPoint(event);
+    stroke = {layer, value: Number($('mode').value), radius: (Number($('size').value) - 1) / 2,
+              point, pointerId: event.pointerId};
+    grid.setPointerCapture(event.pointerId);
+    brushAt(...point);
+    redraw();
+  }
+
+  function moveStroke(event) {
+    if (!stroke || event.pointerId !== stroke.pointerId) return;
+    const next = gridPoint(event);
+    drawBetween(stroke.point, next);
+    stroke.point = next;
+    redraw();
+  }
+
+  function endStroke(event) {
+    if (stroke && event.pointerId === stroke.pointerId) stroke = null;
+  }
+
+  function downloadMask(layer, filename) {
+    const output = document.createElement('canvas');
+    output.width = width;
+    output.height = height;
+    const outputContext = output.getContext('2d');
+    const pixels = outputContext.createImageData(width, height);
+    for (let i = 0; i < masks[layer].length; i++) {
+      const shade = masks[layer][i] * 255;
+      pixels.data.set([shade, shade, shade, 255], i * 4);
+    }
+    outputContext.putImageData(pixels, 0, 0);
+    output.toBlob(blob => {
+      if (!blob) { $('status').textContent = 'Could not encode the mask.'; return; }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      $('status').textContent = 'Downloaded ' + filename;
+    }, 'image/png');
+  }
+
+  const [aligned, blockin, lines, details] = await Promise.all([
+    loadImage(data.aligned), data.blockin && loadImage(data.blockin),
+    loadImage(data.lines), loadImage(data.details),
+  ]);
+  if ([aligned, blockin, lines, details].some(image => image && (image.width !== width || image.height !== height))) {
+    throw new Error('A guide or underlay does not match the case grid.');
+  }
+  underlay.aligned = aligned;
+  underlay.blockin = blockin;
+  masks.lines = maskPixels(lines);
+  masks.details = maskPixels(details);
+  $('base-control').hidden = !blockin;
+  $('zoom').value = String(Math.max(1, Math.min(4, Math.floor($('workspace').clientWidth / width))));
+  $('grid-title').textContent = `Native grid · ${width} × ${height}`;
+  applyZoom();
+  redraw();
+  $('zoom').addEventListener('change', applyZoom);
+  for (const id of ['base', 'show-lines', 'show-details']) $(id).addEventListener('change', redraw);
+  grid.addEventListener('pointerdown', startStroke);
+  grid.addEventListener('pointermove', moveStroke);
+  for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) grid.addEventListener(event, endStroke);
+  $('undo').addEventListener('click', () => {
+    const {layer, previous} = undoStack.pop();
+    masks[layer] = previous;
+    $('undo').disabled = undoStack.length === 0;
+    redraw();
+  });
+  $('save-lines').addEventListener('click', () => downloadMask('lines', 'lineart.png'));
+  $('save-details').addEventListener('click', () => downloadMask('details', 'detail_mask.png'));
+  for (const id of ['editor-controls', 'editor-legend', 'grid', 'download-controls']) $(id).hidden = false;
+  $('static-grid').hidden = true;
+  $('status').textContent = 'Guide layers ready.';
+}
+if (document.body.dataset.review === 'generated') {
+  initializeEditor().catch(error => {
+    document.getElementById('status').textContent =
+      'Could not start the editor. ' + error.message + ' Regenerate the review page with extract and reopen it in a browser.';
+  });
+}
+</script>
+</body>
+</html>

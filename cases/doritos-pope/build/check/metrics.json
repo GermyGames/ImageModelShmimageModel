@@ -1,0 +1,30 @@
+{
+  "passed": true,
+  "checks": {
+    "silhouette_iou": {
+      "value": 1.0,
+      "target": ">= 0.88",
+      "pass": true
+    },
+    "edge_alignment": {
+      "value": 0.862,
+      "target": ">= 0.72",
+      "pass": true
+    },
+    "mean_delta_e": {
+      "value": 4.79,
+      "target": "<= 14.0",
+      "pass": true
+    },
+    "orphan_ratio": {
+      "value": 0.0013,
+      "target": "<= 0.02",
+      "pass": true
+    },
+    "jaggie_index": {
+      "value": 0.0,
+      "target": "<= 0.08",
+      "pass": true
+    }
+  }
+}

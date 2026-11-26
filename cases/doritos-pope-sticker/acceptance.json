@@ -1,0 +1,6 @@
+{
+  "silhouette_iou_min": 0.88,
+  "edge_alignment_min": 0.72,
+  "orphan_ratio_max": 0.02,
+  "jaggie_index_max": 0.08
+}

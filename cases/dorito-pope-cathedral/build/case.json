@@ -1,0 +1,9 @@
+{
+  "case_name": "dorito-pope-cathedral",
+  "reference_path": "/home/jeremym/media/Storage/Dev/ImageModelShmimageModel/cases/dorito-pope-cathedral/source/reference.jpg",
+  "size": 320,
+  "palette": "custom",
+  "colors": 62,
+  "target_w": 256,
+  "target_h": 320
+}

@@ -1,0 +1,9 @@
+{
+  "case_name": "mona-lisa-nes",
+  "reference_path": "/home/jeremym/media/Storage/Dev/ImageModelShmimageModel/cases/mona-lisa-nes/source/reference.jpg",
+  "size": 116,
+  "palette": "nes",
+  "colors": 14,
+  "target_w": 80,
+  "target_h": 116
+}
