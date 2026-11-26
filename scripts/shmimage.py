@@ -10,6 +10,7 @@ Commands:
   fit      Run 4 recorded passes: silhouette -> block-in -> shading -> cleanup
   check    Measure Silhouette IoU, Edge F1, Delta E, Orphans, and Jaggies
   tile-preview  Show the repeat or bring the tile joins to the center
+  tile-stats    Report luminance balance, palette coverage, and seam continuity
   record-revision  Save a labeled native draft for the build timelapse
   deliver  Export 1x/Nx PNGs, palette sheet, build timelapse GIF, and .aseprite
 """
@@ -30,6 +31,7 @@ from revision_history import (
     Revision, read_revision, record_revision, revision_paths, timelapse_with_revisions,
 )
 from style_reference import analyze_style, load_style
+from tile_tools import tonal_report
 
 PALETTES = {
     "gameboy": [
@@ -802,6 +804,28 @@ def cmd_tile_preview(args: argparse.Namespace) -> None:
     print(f"[tile-preview] Saved {preview.width} × {preview.height} preview to {destination}")
 
 
+def cmd_tile_stats(args: argparse.Namespace) -> None:
+    if args.top_colors < 1:
+        sys.exit("Error: top-colors must be a positive integer.")
+
+    ref_image = None
+    try:
+        with Image.open(args.input) as image:
+            if args.reference:
+                with Image.open(args.reference) as ref:
+                    ref_image = ref.convert("RGBA")
+            report = tonal_report(image, reference=ref_image, top_colors=args.top_colors)
+    except ValueError as error:
+        sys.exit(f"Error: {error}")
+
+    payload = json.dumps(report, indent=2)
+    if args.output:
+        destination = Path(args.output)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(payload + "\n", encoding="utf-8")
+    print(payload)
+
+
 def cmd_record_revision(args: argparse.Namespace) -> None:
     case_dir = Path(args.case_dir).resolve()
     load_meta(case_dir)
@@ -1001,6 +1025,13 @@ def main() -> None:
     p_tile.add_argument("--scale", type=int, default=1, help="Integer nearest-neighbor enlargement")
     p_tile.add_argument("--center-seams", action="store_true", help="Wrap the image by half its width and height")
     p_tile.set_defaults(func=cmd_tile_preview)
+
+    p_tile_stats = sub.add_parser("tile-stats", help="Report luminance balance, palette coverage, and seam continuity")
+    p_tile_stats.add_argument("--input", required=True, help="Tile or pass PNG")
+    p_tile_stats.add_argument("--reference", help="Optional material reference image for comparison")
+    p_tile_stats.add_argument("--top-colors", type=int, default=24, help="Maximum palette colors to list")
+    p_tile_stats.add_argument("--output", help="Optional JSON output path")
+    p_tile_stats.set_defaults(func=cmd_tile_stats)
 
     p_record = sub.add_parser("record-revision", help="Save a native draft for the timelapse revision chapter")
     p_record.add_argument("case_dir")

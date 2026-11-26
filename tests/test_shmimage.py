@@ -8,10 +8,18 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 
+import numpy as np
 from PIL import Image, ImageChops, ImageDraw
 
 
-CLI = Path(__file__).resolve().parents[1] / "scripts" / "shmimage.py"
+SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import tile_tools  # noqa: E402
+
+
+CLI = SCRIPTS_DIR / "shmimage.py"
 
 
 class PixelArtCliTests(unittest.TestCase):
@@ -211,3 +219,166 @@ class PixelArtCliTests(unittest.TestCase):
         with Image.open(self.case / "build" / "steps" / "04_cleanup.png") as result:
             self.assertEqual(result.getpixel((x, y))[:3], red)
             self.assertEqual(len(result.getcolors()), 2)
+
+    def test_tile_stats_reports_tonal_balance_palette_and_seams(self):
+        tile = Image.new("RGB", (16, 16), "#d4c9af")
+        draw = ImageDraw.Draw(tile)
+        draw.rectangle((0, 4, 15, 7), fill="#162228")
+        tile_path = self.root / "tile.png"
+        tile.save(tile_path)
+
+        ref = Image.new("RGB", (16, 16), "#000000")
+        ImageDraw.Draw(ref).rectangle((8, 0, 15, 15), fill="#ffffff")
+        ref.save(self.reference)
+
+        report_path = self.root / "report.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(CLI),
+                "tile-stats",
+                "--input",
+                str(tile_path),
+                "--reference",
+                str(self.reference),
+                "--output",
+                str(report_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        stdout_report = json.loads(result.stdout)
+        saved_report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(stdout_report, saved_report)
+        self.assertEqual(saved_report["unique_colors"], 2)
+        self.assertEqual([c["pct"] for c in saved_report["colors"]], [75.0, 25.0])
+        self.assertEqual(saved_report["value_bands"]["dark_pct"], 25.0)
+        self.assertEqual(saved_report["value_bands"]["light_pct"], 75.0)
+        self.assertEqual(saved_report["seams"]["lr_edge_diff"], 0.0)
+        self.assertEqual(saved_report["seams"]["tb_edge_diff"], 0.0)
+        self.assertAlmostEqual(saved_report["reference"]["luma_mean"], 127.5, places=1)
+        self.assertAlmostEqual(
+            saved_report["reference"]["luma_delta"],
+            round(saved_report["luma_mean"] - saved_report["reference"]["luma_mean"], 1),
+            places=1,
+        )
+        self.assertGreater(saved_report["reference"]["seams"]["lr_ratio"], 5.0)
+
+
+class TileToolsTests(unittest.TestCase):
+    def test_periodic_gaussian_wraps_and_preserves_mean(self):
+        impulse = np.zeros((16, 24), dtype=np.float32)
+        impulse[0, 0] = 240.0
+
+        blurred = tile_tools.periodic_gaussian(impulse, sigma=2.5)
+        self.assertEqual(blurred.shape, (16, 24))
+        self.assertAlmostEqual(float(blurred.mean()), float(impulse.mean()), places=4)
+        self.assertAlmostEqual(float(blurred[0, 23]), float(blurred[0, 1]), places=5)
+        self.assertAlmostEqual(float(blurred[15, 0]), float(blurred[1, 0]), places=5)
+        self.assertGreater(float(blurred[0, 23]), 1.0)
+
+        np.testing.assert_allclose(tile_tools.periodic_gaussian(impulse, sigma=0.0), impulse, atol=1e-6)
+
+        rgb = np.stack([impulse, impulse * 0.5, impulse * 0.25], axis=-1)
+        rgb_blurred = tile_tools.periodic_gaussian(rgb, sigma=2.0)
+        self.assertEqual(rgb_blurred.shape, (16, 24, 3))
+        np.testing.assert_allclose(rgb_blurred[..., 1], rgb_blurred[..., 0] * 0.5, atol=1e-4)
+
+    def test_equalize_toroidal_luma_reduces_drift_and_preserves_mean(self):
+        yy, xx = np.mgrid[:32, :32].astype(np.float32)
+        drift = 40.0 * np.sin(2.0 * np.pi * xx / 32.0)
+        ridge = 10.0 * np.sin(2.0 * np.pi * yy * 4.0 / 32.0)
+        field = 110.0 + drift + ridge
+
+        equalized = tile_tools.equalize_toroidal_luma(field, sigma=4.0, strength=0.8)
+        self.assertAlmostEqual(float(equalized.mean()), float(field.mean()), places=4)
+        self.assertLess(float(equalized.std()), float(field.std()) * 0.65)
+
+    def test_toroidal_kuwahara_flattens_noise_and_is_shift_equivariant(self):
+        rng = np.random.default_rng(7)
+        base = np.full((24, 32), 60.0, dtype=np.float32)
+        base[:, 16:] = 190.0
+        noisy = base + rng.normal(0.0, 8.0, size=base.shape).astype(np.float32)
+
+        filtered = tile_tools.toroidal_kuwahara(noisy, radius=2, passes=2)
+        self.assertEqual(filtered.shape, noisy.shape)
+        self.assertLess(float(filtered[:, 4:12].std()), float(noisy[:, 4:12].std()) * 0.5)
+        step = float(filtered[:, 20:28].mean() - filtered[:, 4:12].mean())
+        self.assertGreater(step, 115.0)
+
+        rolled_in = np.roll(noisy, (5, 7), axis=(0, 1))
+        rolled_out = tile_tools.toroidal_kuwahara(rolled_in, radius=2, passes=2)
+        expected_out = np.roll(filtered, (5, 7), axis=(0, 1))
+        np.testing.assert_allclose(rolled_out, expected_out, atol=1e-5)
+
+    def test_absorb_small_components_wraps_and_respects_protected(self):
+        grid = np.zeros((6, 6), dtype=np.uint8)
+        # 2px component wrapping horizontally across right/left border
+        grid[2, 5] = 3
+        grid[2, 0] = 3
+        # Isolated 1px protected component
+        grid[5, 3] = 4
+        # Tie test: 1px component of label 2 with two neighbors = 1 and two neighbors = 5 -> picks 1 (lowest)
+        grid2 = grid.copy()
+        absorbed = tile_tools.absorb_small_components(grid2, max_size=2, protected={4})
+        self.assertEqual(int(absorbed[2, 5]), 0)
+        self.assertEqual(int(absorbed[2, 0]), 0)
+        self.assertEqual(int(absorbed[5, 3]), 4)
+
+        preserved = tile_tools.absorb_small_components(grid2, max_size=1, protected={4})
+        self.assertEqual(int(preserved[2, 5]), 3)
+        self.assertEqual(int(preserved[2, 0]), 3)
+
+        tie_grid = np.zeros((5, 5), dtype=np.uint8)
+        tie_grid[2, 2] = 9
+        tie_grid[1, 2] = 5
+        tie_grid[3, 2] = 5
+        tie_grid[2, 1] = 1
+        tie_grid[2, 3] = 1
+        tie_resolved = tile_tools.absorb_small_components(tie_grid, max_size=1)
+        self.assertEqual(int(tie_resolved[2, 2]), 1)
+
+    def test_prune_sparse_mask_wraps_corners_and_connectivity(self):
+        mask = np.zeros((8, 8), dtype=bool)
+        # 4px corner-wrapping 8-connected cluster: (0, 0), (0, 7), (7, 0), (7, 7)
+        mask[0, 0] = True
+        mask[0, 7] = True
+        mask[7, 0] = True
+        mask[7, 7] = True
+        # 3px isolated cluster
+        mask[3, 3] = True
+        mask[3, 4] = True
+        mask[4, 4] = True
+
+        pruned8 = tile_tools.prune_sparse_mask(mask, min_size=4, connectivity=8)
+        self.assertTrue(pruned8[0, 0] and pruned8[7, 7])
+        self.assertFalse(pruned8[3, 3] or pruned8[4, 4])
+
+        # Diagonal-only 4px chain kept under 8-connectivity, removed under 4-connectivity
+        diag = np.zeros((8, 8), dtype=bool)
+        for i in range(4):
+            diag[i, i] = True
+        self.assertTrue(tile_tools.prune_sparse_mask(diag, min_size=4, connectivity=8)[diag].all())
+        self.assertFalse(tile_tools.prune_sparse_mask(diag, min_size=4, connectivity=4).any())
+
+    def test_seam_continuity_distinguishes_seamless_from_ramp(self):
+        yy, xx = np.mgrid[:16, :16].astype(np.float32)
+        periodic = 128.0 + 40.0 * np.cos(2.0 * np.pi * (xx + yy) / 16.0)
+        seamless_stats = tile_tools.seam_continuity(periodic)
+        self.assertLess(seamless_stats["lr_ratio"], 1.3)
+        self.assertLess(seamless_stats["tb_ratio"], 1.3)
+
+        ramp = np.tile(np.linspace(0.0, 255.0, 16, dtype=np.float32), (16, 1))
+        ramp_stats = tile_tools.seam_continuity(ramp)
+        self.assertGreater(ramp_stats["lr_ratio"], 10.0)
+        self.assertEqual(ramp_stats["tb_ratio"], 1.0)
+
+    def test_torus_delta_shortest_signed_distance(self):
+        coords = np.array([0.0, 15.0, 8.0], dtype=np.float32)
+        deltas_from_15 = tile_tools.torus_delta(coords, 15.0, 16)
+        np.testing.assert_allclose(deltas_from_15, np.array([1.0, 0.0, -7.0], dtype=np.float32))
+        deltas_from_1 = tile_tools.torus_delta(np.array([15.0, 2.0], dtype=np.float32), 1.0, 16)
+        np.testing.assert_allclose(deltas_from_1, np.array([-2.0, 1.0], dtype=np.float32))

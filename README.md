@@ -56,7 +56,7 @@ Use `--bg-mode auto` to isolate a subject. Built-in palettes include Game Boy (`
 
 The CLI can also package artwork drawn directly on a small pixel grid with `deliver --manual`. [See the hand-redraw walkthrough](references/hand-redraws.md).
 
-Use `init --tile` for an original or referenced seamless texture. Use `tile-preview` to inspect a repeated field or bring the tile joins to the center. [See seamless tile creation and styling](references/seamless-tiles.md).
+Use `init --tile` for an original or referenced seamless texture. Use `tile-preview` to inspect a repeated field or bring the tile joins to the center, and `tile-stats` to check luminance balance, palette coverage, and seam continuity. [See seamless tile creation and styling](references/seamless-tiles.md).
 
 Use `extract` to create candidate line art and a protected detail mask. Open the generated local review page to edit them with a keep/erase brush. The `style` command samples a palette and outline settings from a style image, and `fit` can apply both the edited masks and the sampled style. [See the guided conversion workflow](references/guided-conversion.md).
 
