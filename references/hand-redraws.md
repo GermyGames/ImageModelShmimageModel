@@ -24,6 +24,8 @@ Save a snapshot after each distinct visual revision, including drafts you refine
   - **Rounded sticker contours.** Use circular Euclidean distance dilations rather than square `MaxFilter` dilations when building thick puffy outlines or scalloped halos.
   - **Curved pixel typography.** Do not raster-rotate letterforms with `Image.rotate`, which breaks stems and clogs counter holes. Author strokes directly in each glyph's curved/tilted local coordinate frame (or hand-placed bitmaps) and verify letter counters (`G`, `E`, `R`, `A`, `S`) at integer zoom.
   - **Seamless organic shading and radiating appendages.** Paint continuous outer membranes or rims cleanly over radiating spikes/cilia so shadow strokes do not notch the rim, and drive curved-body shading from a smooth continuous field rather than clamped per-segment normals so rounded endcaps stay free of diagonal seams.
+  - **Layered accessories and late-pass glints.** When adding foreground accessories (headphones, hats, gear) over a character, mask Pass-4 specular highlights on underlying fur, cilia, or membranes (`& ~accessory_mask`) so glints do not bleed over the accessory's dark outline.
+  - **Desktop app icons.** Re-author natively on a power-of-two square grid (e.g., `128 × 128`) rather than downsampling larger art. Keep exterior corners strictly transparent (`alpha = 0`), frame the rounded-square tile with a dark outer border and lit top-left bevel for contrast on both light and dark docks, and use an integer half-extent when evaluating superellipses on half-integer pixel centers (`x + 0.5`) so cardinal midpoints do not develop 1-pixel bumps. Inspect dock sizes with `icon-preview` before exporting with `deliver --manual --app-icon`.
 
 ## Export
 

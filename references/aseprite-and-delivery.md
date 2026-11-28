@@ -10,6 +10,7 @@
 4. **`deliver/<case>_palette.hex`:** Exported hex palette file compatible with Aseprite, Lospec, and Pyxel Edit.
 5. **`deliver/<case>.aseprite` (Optional):** If `aseprite` is installed on the system `PATH` (or passed via `--aseprite-bin`), `deliver` executes `scripts/aseprite/build.lua` in headless batch mode (`aseprite -b`) to generate a native multi-layer `.aseprite` source file with separate layers for `Silhouette`, `Block-In`, `Shading`, and `Cleanup`.
 6. **`deliver/<case>_palette.png`:** Preview of the palette with color usage percentages.
+7. **Desktop App Icon Exports (`--app-icon`, square canvases only):** Adds `<case>_256.png`, `<case>_512.png`, `<case>_1024.png` (nearest-neighbor for integer upscales), and a multi-size `<case>.ico` (`16`, `32`, `48`, `64`, `128`, `256`). Use `python3 scripts/shmimage.py icon-preview cases/<case>` beforehand to inspect dock/taskbar legibility on light and dark backgrounds.
 
 ## Record Revisions for the Timelapse
 

@@ -1,0 +1,60 @@
+{
+  "mode": "manual",
+  "passed": true,
+  "size": [
+    128,
+    128
+  ],
+  "unique_colors": 41,
+  "orphan_count": 2,
+  "jaggie_count": 21,
+  "orphans": [
+    [
+      19,
+      74
+    ],
+    [
+      108,
+      74
+    ]
+  ],
+  "checks": {
+    "step_sizes_match": {
+      "value": {
+        "01_silhouette.png": [
+          128,
+          128
+        ],
+        "02_blockin.png": [
+          128,
+          128
+        ],
+        "03_shading.png": [
+          128,
+          128
+        ],
+        "04_cleanup.png": [
+          128,
+          128
+        ]
+      },
+      "target": "all steps match native size",
+      "pass": true
+    },
+    "semi_transparent_pixels": {
+      "value": 0,
+      "target": "== 0",
+      "pass": true
+    },
+    "orphan_ratio": {
+      "value": 0.0002,
+      "target": "<= 0.02",
+      "pass": true
+    },
+    "jaggie_index": {
+      "value": 0.0017,
+      "target": "<= 0.08",
+      "pass": true
+    }
+  }
+}

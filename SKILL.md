@@ -23,7 +23,7 @@ Identify what makes the subject recognizable and which features the style change
 - **Before shading**, view the silhouette and block-in at native size and at an integer zoom. Compare them with the subject reference when available. Check proportions and landmarks for a sprite, or the distribution, value balance, and cadence of forms for a tile.
 - **Before delivery**, inspect the final art at both sizes. Check contours, readability, the requested style, and palette. Inspect a repeated field for tiles.
 - Save the silhouette, block-in, shading, and cleanup PNGs on the same native grid in `cases/<case>/build/steps/`. Keep animation stages in their own subdirectory so they don't overwrite the still. Export previews with integer nearest-neighbor scaling.
-- Use `python3 scripts/shmimage.py review-sheet cases/<case> --steps 1,2 --scale 4` to generate a 1× and integer-zoomed comparison sheet for visual inspection, and `python3 scripts/shmimage.py check cases/<case> --manual` to audit palette count, semi-transparent pixel leaks, step sizes, and isolated pixels on hand-drawn passes.
+- Use `python3 scripts/shmimage.py review-sheet cases/<case> --steps 1,2 --scale 4` to generate a 1× and integer-zoomed comparison sheet for visual inspection, `python3 scripts/shmimage.py icon-preview cases/<case>` to audit desktop app icons on light and dark backgrounds at dock/taskbar sizes, and `python3 scripts/shmimage.py check cases/<case> --manual` to audit palette count, semi-transparent pixel leaks, step sizes, and isolated pixels on hand-drawn passes.
 
 ## Convert a source image
 
@@ -47,6 +47,6 @@ Read `build/check/metrics.json` and inspect `build/check/check_sheet.png` after 
 
 Save the first draft you review and each distinct visual revision before overwriting the working art. Include refinements from your own review and from user feedback. Give each snapshot a short label and reuse the case for later revisions.
 
-For still art, use `record-revision` and `deliver`. The export adds saved history as a labeled chapter after the four build passes. Review it and link the native PNG, scaled PNG, and timelapse from `cases/<case>/deliver/`. Include the Aseprite file when exported. For locally drawn passes, use `deliver --manual`. See [Export options and revision history](references/aseprite-and-delivery.md) for the commands.
+For still art, use `record-revision` and `deliver`. The export adds saved history as a labeled chapter after the four build passes. Review it and link the native PNG, scaled PNG, and timelapse from `cases/<case>/deliver/`. Include the Aseprite file when exported. For locally drawn passes, use `deliver --manual` (add `--app-icon` for square desktop icons to also export `256`/`512`/`1024` PNGs and a multi-size `.ico`). See [Export options and revision history](references/aseprite-and-delivery.md) for the commands.
 
 For animation, save each revision as a complete ordered sheet or frame sequence. Deliver the native transparent spritesheet and a looping preview of the same frames and timing.

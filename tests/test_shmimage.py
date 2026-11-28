@@ -290,6 +290,7 @@ class PixelArtCliTests(unittest.TestCase):
         self.assertEqual(bad["checks"]["semi_transparent_pixels"]["value"], 1)
         self.assertFalse(bad["checks"]["semi_transparent_pixels"]["pass"])
         self.assertGreaterEqual(bad["orphan_count"], 1)
+        self.assertIn([2, 2], bad["orphans"])
         self.assertEqual(bad["unique_colors"], 3)
         self.assertFalse(bad["checks"]["unique_colors"]["pass"])
 
@@ -306,6 +307,7 @@ class PixelArtCliTests(unittest.TestCase):
         self.assertTrue(good["checks"]["step_sizes_match"]["pass"])
         self.assertEqual(good["checks"]["semi_transparent_pixels"]["value"], 0)
         self.assertEqual(good["orphan_count"], 0)
+        self.assertEqual(good["orphans"], [])
         self.assertEqual(good["unique_colors"], 2)
         self.assertTrue(good["checks"]["unique_colors"]["pass"])
 
@@ -346,6 +348,64 @@ class PixelArtCliTests(unittest.TestCase):
         self.assertEqual(shmimage.format_palette_pct(1, 5000), "<0.1%")
         self.assertEqual(shmimage.format_palette_pct(0, 100), "0.0%")
         self.assertEqual(shmimage.format_palette_pct(25, 100), "25.0%")
+
+    def test_icon_preview_renders_light_and_dark_size_rows(self):
+        Image.new("RGB", (16, 16), "#210351").save(self.reference)
+        self.run_cli("init", "--input", str(self.reference), "--size", "16")
+
+        steps = self.case / "build" / "steps"
+        icon = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+        ImageDraw.Draw(icon).rectangle((2, 2, 13, 13), fill=(146, 81, 246, 255))
+        icon.save(steps / "04_cleanup.png")
+
+        self.run_cli("icon-preview")
+        default_preview = self.case / "build" / "check" / "icon_preview.png"
+        self.assertTrue(default_preview.is_file())
+        with Image.open(default_preview) as preview:
+            self.assertEqual(preview.getpixel((0, 0)), (236, 239, 244))
+            self.assertEqual(preview.getpixel((0, preview.height - 1)), (24, 26, 32))
+
+        custom_out = self.root / "dock_preview.png"
+        self.run_cli("icon-preview", "--sizes", "64,32", "--output", str(custom_out))
+        self.assertTrue(custom_out.is_file())
+        with Image.open(custom_out) as custom:
+            self.assertEqual(custom.getpixel((0, 0)), (236, 239, 244))
+            self.assertEqual(custom.getpixel((0, custom.height - 1)), (24, 26, 32))
+
+    def test_deliver_app_icon_exports_png_sizes_and_multisize_ico(self):
+        Image.new("RGB", (16, 16), "#210351").save(self.reference)
+        self.run_cli("init", "--input", str(self.reference), "--size", "16")
+
+        steps = self.case / "build" / "steps"
+        icon = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+        ImageDraw.Draw(icon).rectangle((2, 2, 13, 13), fill=(146, 81, 246, 255))
+        for fname in ["01_silhouette.png", "02_blockin.png", "03_shading.png", "04_cleanup.png"]:
+            icon.save(steps / fname)
+
+        self.run_cli("deliver", "--manual", "--scale", "4", "--app-icon")
+        deliver = self.case / "deliver"
+        for sz in (256, 512, 1024):
+            path = deliver / f"art_{sz}.png"
+            self.assertTrue(path.is_file())
+            with Image.open(path) as im:
+                self.assertEqual(im.size, (sz, sz))
+                self.assertEqual(im.getpixel((0, 0))[3], 0)
+        ico_path = deliver / "art.ico"
+        self.assertTrue(ico_path.is_file())
+        with Image.open(ico_path) as ico:
+            self.assertEqual(sorted(ico.info.get("sizes", [])), [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+
+        # Reject non-square canvas when --app-icon is requested
+        nonsq = Image.new("RGBA", (8, 6), "#210351")
+        for fname in ["01_silhouette.png", "02_blockin.png", "03_shading.png", "04_cleanup.png"]:
+            nonsq.save(steps / fname)
+        bad = subprocess.run(
+            [sys.executable, "-B", str(CLI), "deliver", str(self.case), "--manual", "--scale", "4", "--app-icon"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("square", bad.stderr)
 
 
 class TileToolsTests(unittest.TestCase):

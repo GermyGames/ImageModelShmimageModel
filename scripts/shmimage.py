@@ -10,6 +10,7 @@ Commands:
   fit           Run 4 recorded passes: silhouette -> block-in -> shading -> cleanup
   check         Evaluate conversion metrics or --manual hygiene checks and write check_sheet.png
   review-sheet  Build a 1x and integer-zoomed comparison sheet for hand-redraw review
+  icon-preview  Render an app icon at desktop/dock sizes on light and dark backgrounds
   tile-preview  Show the repeat or bring the tile joins to the center
   tile-stats    Report luminance balance, palette coverage, and seam continuity
   record-revision  Save a labeled native draft for the build timelapse
@@ -760,6 +761,7 @@ def run_manual_check(case_dir: Path, args: argparse.Namespace) -> None:
         "unique_colors": int(len(palette_rgb)),
         "orphan_count": len(orphans),
         "jaggie_count": len(jaggies),
+        "orphans": [[int(x), int(y)] for x, y in orphans[:50]],
         "checks": checks,
     }
     (check_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
@@ -1033,6 +1035,66 @@ def cmd_review_sheet(args: argparse.Namespace) -> None:
     print(f"[review-sheet] Saved {sheet.width} × {sheet.height} review sheet to {out_path}")
 
 
+def _resize_icon_frame(img: Image.Image, target_size: int) -> Image.Image:
+    if img.width == target_size and img.height == target_size:
+        return img.copy()
+    use_nearest = img.width == img.height and target_size >= img.width and target_size % img.width == 0
+    resample = Image.Resampling.NEAREST if use_nearest else Image.Resampling.LANCZOS
+    return img.resize((target_size, target_size), resample)
+
+
+def cmd_icon_preview(args: argparse.Namespace) -> None:
+    case_dir = Path(args.case_dir).resolve()
+    load_meta(case_dir)
+    target_path = Path(args.image).resolve() if args.image else case_dir / "build" / "steps" / "04_cleanup.png"
+    if not target_path.is_file():
+        sys.exit(f"Error: target icon image not found: {target_path}")
+
+    sizes: list[int] = []
+    for token in args.sizes.split(","):
+        tok = token.strip()
+        if not tok.isdigit() or int(tok) < 1:
+            sys.exit("Error: --sizes must be comma-separated positive integers.")
+        sizes.append(int(tok))
+    if not sizes:
+        sys.exit("Error: --sizes must include at least one size.")
+
+    with Image.open(target_path) as loaded:
+        icon = loaded.convert("RGBA")
+
+    pad = 16
+    max_sz = max(sizes)
+    row_h = 26 + max_sz + 24
+    slot_widths = [max(sz, 40) for sz in sizes]
+    sheet_w = max(240, pad + sum(sw + pad for sw in slot_widths))
+    sheet_h = row_h * 2
+
+    sheet = Image.new("RGB", (sheet_w, sheet_h), (24, 26, 33))
+    draw = ImageDraw.Draw(sheet)
+
+    for row_idx, (label, bg_hex, txt_col) in enumerate([
+        ("Light Desktop (#ECEFF4)", "#eceff4", (30, 35, 45)),
+        ("Dark Dock (#181A20)", "#181a20", (225, 230, 240)),
+    ]):
+        y0 = row_idx * row_h
+        draw.rectangle([0, y0, sheet_w, y0 + row_h], fill=bg_hex)
+        draw.text((pad, y0 + 6), label, fill=txt_col)
+        x = pad
+        for sz, sw in zip(sizes, slot_widths):
+            thumb = _resize_icon_frame(icon, sz)
+            bg_tile = Image.new("RGBA", (sz, sz), bg_hex)
+            comp = Image.alpha_composite(bg_tile, thumb).convert("RGB")
+            y_pos = y0 + 26 + (max_sz - sz) // 2
+            sheet.paste(comp, (x, y_pos))
+            draw.text((x, y_pos + sz + 4), f"{sz}px", fill=txt_col)
+            x += sw + pad
+
+    out_path = Path(args.output) if args.output else case_dir / "build" / "check" / "icon_preview.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(out_path)
+    print(f"[icon-preview] Saved {sheet.width} × {sheet.height} icon preview to {out_path}")
+
+
 def cmd_tile_preview(args: argparse.Namespace) -> None:
     if min(args.columns, args.rows, args.scale) < 1:
         sys.exit("Error: columns, rows, and scale must be positive integers.")
@@ -1135,6 +1197,20 @@ def cmd_deliver(args: argparse.Namespace) -> None:
 
     final_nx = final_1x.resize((final_1x.width * scale, final_1x.height * scale), Image.Resampling.NEAREST)
     final_nx.save(deliver_dir / f"{case_name}_{scale}x.png")
+
+    if args.app_icon:
+        if final_1x.width != final_1x.height:
+            sys.exit("Error: --app-icon requires a square native canvas (width == height).")
+        for icon_sz in (256, 512, 1024):
+            _resize_icon_frame(final_1x, icon_sz).save(deliver_dir / f"{case_name}_{icon_sz}.png")
+        ico_sizes = [256, 128, 64, 48, 32, 16]
+        ico_frames = [_resize_icon_frame(final_1x, sz) for sz in ico_sizes]
+        ico_frames[0].save(
+            deliver_dir / f"{case_name}.ico",
+            format="ICO",
+            sizes=[(f.width, f.height) for f in ico_frames],
+            append_images=ico_frames[1:],
+        )
 
     fin_mask = np.array(final_1x.getchannel("A")) >= 128
     if args.manual:
@@ -1284,6 +1360,13 @@ def main() -> None:
     p_review.add_argument("--no-reference", action="store_true", help="Omit the reference subject panel")
     p_review.set_defaults(func=cmd_review_sheet)
 
+    p_icon = sub.add_parser("icon-preview", help="Render an app icon at desktop/dock sizes on light and dark backgrounds")
+    p_icon.add_argument("case_dir")
+    p_icon.add_argument("--image", default=None, help="Optional RGBA icon PNG path (defaults to build/steps/04_cleanup.png)")
+    p_icon.add_argument("--sizes", default="128,64,48,32", help="Comma-separated square icon preview sizes in pixels")
+    p_icon.add_argument("--output", default=None, help="Output PNG path (defaults to build/check/icon_preview.png)")
+    p_icon.set_defaults(func=cmd_icon_preview)
+
     p_tile = sub.add_parser("tile-preview", help="Inspect repeated tiles or centered wrap joins")
     p_tile.add_argument("--input", required=True, help="Native tile PNG")
     p_tile.add_argument("--output", required=True, help="Preview PNG")
@@ -1310,6 +1393,7 @@ def main() -> None:
     p_del.add_argument("case_dir")
     p_del.add_argument("--scale", type=int, default=8)
     p_del.add_argument("--manual", action="store_true", help="Package hand-drawn passes and read the palette from the final PNG")
+    p_del.add_argument("--app-icon", action="store_true", help="Export desktop app icon PNGs (256, 512, 1024) and multi-size .ico (requires square canvas)")
     p_del.add_argument("--aseprite-bin", default=None)
     p_del.set_defaults(func=cmd_deliver)
 

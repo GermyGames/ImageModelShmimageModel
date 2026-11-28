@@ -25,5 +25,5 @@ python3 scripts/shmimage.py check cases/redraw --manual --max-colors 32
 This writes `build/check/metrics.json` (`"mode": "manual"`) and `build/check/check_sheet.png`, checking:
 - `step_sizes_match`: All existing passes in `build/steps/` share the target native dimensions.
 - `semi_transparent_pixels`: Count of foreground pixels with `0 < alpha < 255` is `0` (catches accidental blur or anti-aliased edges).
-- `orphan_ratio` & `jaggie_index`: Same defect detection and `acceptance.json` thresholds applied to the extracted foreground palette.
+- `orphan_ratio` & `jaggie_index`: Same defect detection and `acceptance.json` thresholds applied to the extracted foreground palette. `metrics.json` also lists up to 50 `"orphans"` `[x, y]` coordinates so stray 1-pixel islands can be pinpointed immediately.
 - `unique_colors` (when `--max-colors` is passed): Total foreground RGB colors stay within the budget. Pass `--image <path>` to inspect an earlier draft or specific PNG.
