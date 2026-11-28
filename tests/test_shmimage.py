@@ -16,6 +16,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import shmimage  # noqa: E402
 import tile_tools  # noqa: E402
 
 
@@ -266,6 +267,85 @@ class PixelArtCliTests(unittest.TestCase):
             places=1,
         )
         self.assertGreater(saved_report["reference"]["seams"]["lr_ratio"], 5.0)
+
+    def test_manual_check_reports_hygiene_defects_and_passes_when_clean(self):
+        Image.new("RGB", (8, 8), "#221133").save(self.reference)
+        self.run_cli("init", "--input", str(self.reference), "--size", "8")
+
+        steps = self.case / "build" / "steps"
+        Image.new("RGBA", (6, 8), (34, 17, 51, 255)).save(steps / "01_silhouette.png")
+        draft = Image.new("RGBA", (8, 8), (34, 17, 51, 255))
+        draft.putpixel((2, 2), (255, 100, 50, 255))  # 1-px orphan
+        draft.putpixel((5, 5), (90, 220, 120, 180))  # semi-transparent leak
+        draft.save(steps / "04_cleanup.png")
+
+        self.run_cli("check", "--manual", "--max-colors", "2")
+        metrics_path = self.case / "build" / "check" / "metrics.json"
+        sheet_path = self.case / "build" / "check" / "check_sheet.png"
+        self.assertTrue(sheet_path.is_file())
+        bad = json.loads(metrics_path.read_text(encoding="utf-8"))
+        self.assertEqual(bad["mode"], "manual")
+        self.assertFalse(bad["passed"])
+        self.assertFalse(bad["checks"]["step_sizes_match"]["pass"])
+        self.assertEqual(bad["checks"]["semi_transparent_pixels"]["value"], 1)
+        self.assertFalse(bad["checks"]["semi_transparent_pixels"]["pass"])
+        self.assertGreaterEqual(bad["orphan_count"], 1)
+        self.assertEqual(bad["unique_colors"], 3)
+        self.assertFalse(bad["checks"]["unique_colors"]["pass"])
+
+        # Fix step size, alpha leak, orphan, and palette budget
+        clean = Image.new("RGBA", (8, 8), (34, 17, 51, 255))
+        draw = ImageDraw.Draw(clean)
+        draw.rectangle((2, 2, 5, 5), fill=(255, 100, 50, 255))
+        clean.save(steps / "01_silhouette.png")
+        clean.save(steps / "04_cleanup.png")
+
+        self.run_cli("check", "--manual", "--max-colors", "2")
+        good = json.loads(metrics_path.read_text(encoding="utf-8"))
+        self.assertTrue(good["passed"])
+        self.assertTrue(good["checks"]["step_sizes_match"]["pass"])
+        self.assertEqual(good["checks"]["semi_transparent_pixels"]["value"], 0)
+        self.assertEqual(good["orphan_count"], 0)
+        self.assertEqual(good["unique_colors"], 2)
+        self.assertTrue(good["checks"]["unique_colors"]["pass"])
+
+    def test_review_sheet_renders_reference_and_selected_steps(self):
+        ref = Image.new("RGB", (6, 6), "#102040")
+        ref.save(self.reference)
+        self.run_cli("init", "--input", str(self.reference), "--size", "12")
+
+        steps = self.case / "build" / "steps"
+        Image.new("RGBA", (12, 12), "#331155").save(steps / "01_silhouette.png")
+        step2 = Image.new("RGBA", (12, 12), "#663399")
+        step2.putpixel((4, 4), (255, 255, 255, 255))
+        step2.save(steps / "02_blockin.png")
+
+        self.run_cli("review-sheet", "--steps", "1,2", "--scale", "3")
+        default_sheet = self.case / "build" / "check" / "review_sheet.png"
+        self.assertTrue(default_sheet.is_file())
+        with Image.open(default_sheet) as sheet:
+            self.assertGreater(sheet.width, 350)
+            self.assertGreater(sheet.height, 80)
+
+        custom_out = self.root / "custom_review.png"
+        self.run_cli("review-sheet", "--steps", "2", "--scale", "4", "--no-reference", "--output", str(custom_out))
+        self.assertTrue(custom_out.is_file())
+        with Image.open(custom_out) as solo:
+            # Verify nearest-neighbor 4x block at (4, 4) -> 4x4 white square inside zoomed panel
+            # Top strip has 1 tile (12px tall) + label_h (20px) + pad (12px) + 16px gap = y_zoom_start 60 + label_h 20 = 80
+            white_count = sum(
+                1
+                for py in range(solo.height)
+                for px in range(solo.width)
+                if solo.getpixel((px, py)) == (255, 255, 255)
+            )
+            # 1 px in 1x tile + 16 px in 4x tile = 17 white pixels
+            self.assertEqual(white_count, 17)
+
+    def test_format_palette_pct_handles_tiny_nonzero_highlights(self):
+        self.assertEqual(shmimage.format_palette_pct(1, 5000), "<0.1%")
+        self.assertEqual(shmimage.format_palette_pct(0, 100), "0.0%")
+        self.assertEqual(shmimage.format_palette_pct(25, 100), "25.0%")
 
 
 class TileToolsTests(unittest.TestCase):

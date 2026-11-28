@@ -13,7 +13,7 @@ Work locally and build on a native pixel grid. Use an image generation workflow 
 | --- | --- |
 | Create or restyle an infinitely repeating surface such as cliff, soil, foliage, or masonry, with or without a reference | Draw on a wrapping native grid (or planarize a complex seamless reference on the torus). Follow [Seamless tiles and styling](references/seamless-tiles.md) and review the joins, value balance, and visible repeat. |
 | Pixelate a source, keep its framing and proportions, or apply a fixed palette | Use the conversion CLI below |
-| Redraw or restyle a subject, use a separate style reference, or revise an expression, pose, or anatomy | Draw or edit the pixels directly. Follow [Hand redraws and visual review](references/hand-redraws.md) |
+| Redraw or restyle a subject, upscale a tiny or soft-edged logo/icon onto a larger native grid, or revise an expression, pose, or anatomy | Draw or edit the pixels directly. Follow [Hand redraws and visual review](references/hand-redraws.md) |
 | Animate a sprite or effect, create a spritesheet, or revise an existing loop | Start from the latest approved art when available. [Sprite animation and review](references/sprite-animation.md) covers walk cycles, fire, and loop checks. |
 
 Identify what makes the subject recognizable and which features the style changes. For a portrait, check the contour of the head and jaw, expression, gaze, shoulders, hands, and any held objects. For a revision, use the latest approved image as the base and compare the changed area to the original reference.
@@ -23,6 +23,7 @@ Identify what makes the subject recognizable and which features the style change
 - **Before shading**, view the silhouette and block-in at native size and at an integer zoom. Compare them with the subject reference when available. Check proportions and landmarks for a sprite, or the distribution, value balance, and cadence of forms for a tile.
 - **Before delivery**, inspect the final art at both sizes. Check contours, readability, the requested style, and palette. Inspect a repeated field for tiles.
 - Save the silhouette, block-in, shading, and cleanup PNGs on the same native grid in `cases/<case>/build/steps/`. Keep animation stages in their own subdirectory so they don't overwrite the still. Export previews with integer nearest-neighbor scaling.
+- Use `python3 scripts/shmimage.py review-sheet cases/<case> --steps 1,2 --scale 4` to generate a 1× and integer-zoomed comparison sheet for visual inspection, and `python3 scripts/shmimage.py check cases/<case> --manual` to audit palette count, semi-transparent pixel leaks, step sizes, and isolated pixels on hand-drawn passes.
 
 ## Convert a source image
 

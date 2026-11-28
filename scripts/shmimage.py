@@ -3,16 +3,17 @@
 shmimage.py - Image Model Shmimage Model pixel-art pipeline CLI.
 
 Commands:
-  init     Initialize a case directory with CONTRACT.md and acceptance.json
-  prep     Segment subject, crop/pad, and optimize sub-pixel grid phase alignment
-  extract  Infer line art and protected detail masks for a prepared case
-  style    Sample palette and outline settings from a style reference
-  fit      Run 4 recorded passes: silhouette -> block-in -> shading -> cleanup
-  check    Measure Silhouette IoU, Edge F1, Delta E, Orphans, and Jaggies
+  init          Initialize a case directory with CONTRACT.md and acceptance.json
+  prep          Segment subject, crop/pad, and optimize sub-pixel grid phase alignment
+  extract       Infer line art and protected detail masks for a prepared case
+  style         Sample palette and outline settings from a style reference
+  fit           Run 4 recorded passes: silhouette -> block-in -> shading -> cleanup
+  check         Evaluate conversion metrics or --manual hygiene checks and write check_sheet.png
+  review-sheet  Build a 1x and integer-zoomed comparison sheet for hand-redraw review
   tile-preview  Show the repeat or bring the tile joins to the center
   tile-stats    Report luminance balance, palette coverage, and seam continuity
   record-revision  Save a labeled native draft for the build timelapse
-  deliver  Export 1x/Nx PNGs, palette sheet, build timelapse GIF, and .aseprite
+  deliver       Export 1x/Nx PNGs, palette sheet, build timelapse GIF, and .aseprite
 """
 
 import argparse
@@ -675,9 +676,155 @@ def detect_defects(idx_map: np.ndarray, alpha_mask: np.ndarray) -> tuple[list[tu
     return orphans, jaggies
 
 
+def format_palette_pct(count: int, total: int) -> str:
+    raw_pct = 100.0 * count / max(1, total)
+    if count > 0 and raw_pct < 0.05:
+        return "<0.1%"
+    return f"{raw_pct:.1f}%"
+
+
+def run_manual_check(case_dir: Path, args: argparse.Namespace) -> None:
+    steps_dir = case_dir / "build" / "steps"
+    check_dir = case_dir / "build" / "check"
+    check_dir.mkdir(parents=True, exist_ok=True)
+
+    target_path = Path(args.image).resolve() if args.image else steps_dir / "04_cleanup.png"
+    if not target_path.is_file():
+        sys.exit(f"Error: target image not found: {target_path}")
+
+    with Image.open(target_path) as loaded:
+        final_img = loaded.convert("RGBA")
+    fin_arr = np.array(final_img)
+    alpha = fin_arr[..., 3]
+    fin_mask = alpha >= 128
+    semi_transparent_count = int(np.logical_and(alpha > 0, alpha < 255).sum())
+
+    step_names = ["01_silhouette.png", "02_blockin.png", "03_shading.png", "04_cleanup.png"]
+    step_sizes: dict[str, list[int]] = {}
+    for name in step_names:
+        step_path = steps_dir / name
+        if step_path.is_file():
+            with Image.open(step_path) as step_im:
+                step_sizes[name] = [step_im.width, step_im.height]
+    expected_size = [final_img.width, final_img.height]
+    sizes_ok = all(sz == expected_size for sz in step_sizes.values())
+
+    if np.any(fin_mask):
+        palette_rgb, inv = np.unique(fin_arr[..., :3][fin_mask], axis=0, return_inverse=True)
+        idx_map = np.full(fin_mask.shape, -1, dtype=np.int32)
+        idx_map[fin_mask] = inv
+    else:
+        palette_rgb = np.zeros((0, 3), dtype=np.uint8)
+        idx_map = np.full(fin_mask.shape, -1, dtype=np.int32)
+
+    orphans, jaggies = detect_defects(idx_map, fin_mask)
+    fg_count = max(1, int(fin_mask.sum()))
+    orphan_ratio = float(len(orphans) / fg_count)
+    jaggie_ratio = float(len(jaggies) / fg_count)
+
+    acc = json.loads((case_dir / "acceptance.json").read_text(encoding="utf-8"))
+    checks: dict[str, dict] = {
+        "step_sizes_match": {
+            "value": step_sizes,
+            "target": "all steps match native size",
+            "pass": sizes_ok,
+        },
+        "semi_transparent_pixels": {
+            "value": semi_transparent_count,
+            "target": "== 0",
+            "pass": semi_transparent_count == 0,
+        },
+        "orphan_ratio": {
+            "value": round(orphan_ratio, 4),
+            "target": f"<= {acc['orphan_ratio_max']}",
+            "pass": orphan_ratio <= acc["orphan_ratio_max"],
+        },
+        "jaggie_index": {
+            "value": round(jaggie_ratio, 4),
+            "target": f"<= {acc['jaggie_index_max']}",
+            "pass": jaggie_ratio <= acc["jaggie_index_max"],
+        },
+    }
+    if args.max_colors is not None:
+        checks["unique_colors"] = {
+            "value": int(len(palette_rgb)),
+            "target": f"<= {args.max_colors}",
+            "pass": int(len(palette_rgb)) <= args.max_colors,
+        }
+
+    all_pass = all(c["pass"] for c in checks.values())
+    metrics = {
+        "mode": "manual",
+        "passed": all_pass,
+        "size": [final_img.width, final_img.height],
+        "unique_colors": int(len(palette_rgb)),
+        "orphan_count": len(orphans),
+        "jaggie_count": len(jaggies),
+        "checks": checks,
+    }
+    (check_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+    h, w = fin_mask.shape
+    scale = max(2, min(8, 512 // max(1, w, h)))
+    pw, ph = w * scale, h * scale
+
+    bg = Image.new("RGBA", (pw, ph), (28, 30, 38, 255))
+    fin_up = final_img.resize((pw, ph), Image.Resampling.NEAREST)
+    p_art = Image.alpha_composite(bg, fin_up).convert("RGB")
+    draw_art = ImageDraw.Draw(p_art)
+    box_w = 2 if scale >= 4 else 1
+    for ox, oy in orphans:
+        draw_art.rectangle(
+            [ox * scale, oy * scale, (ox + 1) * scale - 1, (oy + 1) * scale - 1],
+            outline=(255, 40, 40),
+            width=box_w,
+        )
+    for jx, jy in jaggies:
+        draw_art.rectangle(
+            [jx * scale, jy * scale, (jx + 1) * scale - 1, (jy + 1) * scale - 1],
+            outline=(255, 210, 40),
+            width=box_w,
+        )
+
+    rw = max(360, pw)
+    rh = max(220, ph)
+    p_info = Image.new("RGB", (rw, rh), (24, 26, 33))
+    draw_info = ImageDraw.Draw(p_info)
+    n_colors = max(1, len(palette_rgb))
+    swatch_w = max(8, (rw - 16) // n_colors)
+    for i, rgb_arr in enumerate(palette_rgb):
+        rgb = tuple(int(v) for v in rgb_arr)
+        draw_info.rectangle([8 + i * swatch_w, 8, 8 + (i + 1) * swatch_w - 2, 36], fill=rgb)
+
+    y_txt = 48
+    draw_info.text(
+        (8, y_txt),
+        f"Size: {w}x{h}  Colors: {len(palette_rgb)}  Orphans: {len(orphans)}  Jaggies: {len(jaggies)}",
+        fill=(210, 216, 228),
+    )
+    y_txt += 22
+    for k, v in checks.items():
+        status = "PASS" if v["pass"] else "FAIL"
+        color = (90, 230, 120) if v["pass"] else (255, 90, 90)
+        display_val = ("ok" if v["pass"] else "mismatch") if k == "step_sizes_match" else v["value"]
+        draw_info.text((8, y_txt), f"[{status}] {k}: {display_val} ({v['target']})", fill=color)
+        y_txt += 18
+
+    sheet = Image.new("RGB", (pw + rw + 12, max(ph, rh) + 8), (16, 17, 22))
+    sheet.paste(p_art, (4, 4))
+    sheet.paste(p_info, (pw + 8, 4))
+    sheet.save(check_dir / "check_sheet.png")
+
+    print(json.dumps(metrics, indent=2))
+
+
 def cmd_check(args: argparse.Namespace) -> None:
     case_dir = Path(args.case_dir).resolve()
-    meta = load_meta(case_dir)
+    load_meta(case_dir)
+    if args.manual:
+        run_manual_check(case_dir, args)
+        return
+
     prep_dir = case_dir / "build" / "prep"
     steps_dir = case_dir / "build" / "steps"
     check_dir = case_dir / "build" / "check"
@@ -775,6 +922,115 @@ def cmd_check(args: argparse.Namespace) -> None:
     sheet.save(check_dir / "check_sheet.png")
 
     print(json.dumps(metrics, indent=2))
+
+
+def cmd_review_sheet(args: argparse.Namespace) -> None:
+    if args.scale < 1:
+        sys.exit("Error: scale must be a positive integer.")
+
+    case_dir = Path(args.case_dir).resolve()
+    meta = load_meta(case_dir)
+    steps_dir = case_dir / "build" / "steps"
+    step_defs = {
+        1: ("01: Silhouette", "01_silhouette.png"),
+        2: ("02: Block-In", "02_blockin.png"),
+        3: ("03: Shading", "03_shading.png"),
+        4: ("04: Cleanup", "04_cleanup.png"),
+    }
+
+    raw_steps = args.steps.strip()
+    if raw_steps.lower() == "auto":
+        selected = [n for n in (1, 2, 3, 4) if (steps_dir / step_defs[n][1]).is_file()]
+        if not selected:
+            sys.exit(f"Error: no build step PNGs found in {steps_dir}")
+    else:
+        selected = []
+        for token in raw_steps.split(","):
+            tok = token.strip()
+            if not tok.isdigit() or int(tok) not in step_defs:
+                sys.exit("Error: --steps must be 'auto' or comma-separated integers from 1..4.")
+            num = int(tok)
+            if num not in selected:
+                selected.append(num)
+        if not selected:
+            sys.exit("Error: --steps must select at least one step.")
+
+    steps_loaded: list[tuple[str, Image.Image]] = []
+    for num in selected:
+        label, filename = step_defs[num]
+        path = steps_dir / filename
+        if not path.is_file():
+            sys.exit(f"Error: step file not found: {path}")
+        with Image.open(path) as img:
+            steps_loaded.append((label, img.convert("RGBA")))
+
+    tile_w = max(im.width for _, im in steps_loaded)
+    tile_h = max(im.height for _, im in steps_loaded)
+
+    top_tiles: list[tuple[str, Image.Image]] = []
+    ref_path = meta.get("reference_path")
+    if not args.no_reference and ref_path and Path(ref_path).is_file():
+        with Image.open(ref_path) as ref:
+            ref_rgba = ref.convert("RGBA")
+        ref_scale = min(tile_w / ref_rgba.width, tile_h / ref_rgba.height)
+        ref_size = (
+            max(1, round(ref_rgba.width * ref_scale)),
+            max(1, round(ref_rgba.height * ref_scale)),
+        )
+        resample = Image.Resampling.NEAREST if ref_scale > 1.0 else Image.Resampling.BILINEAR
+        ref_panel = ref_rgba.resize(ref_size, resample)
+        ref_bg = Image.new("RGBA", (tile_w, tile_h), (30, 32, 40, 255))
+        ref_bg.alpha_composite(ref_panel, ((tile_w - ref_panel.width) // 2, (tile_h - ref_panel.height) // 2))
+        top_tiles.append(("Reference", ref_bg.convert("RGB")))
+
+    for label, im in steps_loaded:
+        tile_bg = Image.new("RGBA", (tile_w, tile_h), (30, 32, 40, 255))
+        tile_bg.alpha_composite(im, (0, 0))
+        top_tiles.append((f"{label} (1x)", tile_bg.convert("RGB")))
+
+    zw, zh = tile_w * args.scale, tile_h * args.scale
+    zoom_tiles: list[tuple[str, Image.Image]] = []
+    for label, im in steps_loaded:
+        up = im.resize((im.width * args.scale, im.height * args.scale), Image.Resampling.NEAREST)
+        up_bg = Image.new("RGBA", (zw, zh), (30, 32, 40, 255))
+        up_bg.alpha_composite(up, (0, 0))
+        zoom_tiles.append((f"{label} ({args.scale}x)", up_bg.convert("RGB")))
+
+    pad = 12
+    label_h = 20
+    top_slot_w = max(tile_w, 128)
+    zoom_slot_w = max(zw, 148)
+    cols = 1 if zw > 640 or len(zoom_tiles) == 1 else 2
+    rows = (len(zoom_tiles) + cols - 1) // cols
+
+    top_row_w = pad + len(top_tiles) * (top_slot_w + pad)
+    zoom_grid_w = pad + cols * (zoom_slot_w + pad)
+    sheet_w = max(top_row_w, zoom_grid_w)
+    top_row_h = label_h + tile_h
+    zoom_row_h = label_h + zh
+    sheet_h = pad + top_row_h + 16 + rows * (zoom_row_h + pad)
+
+    sheet = Image.new("RGB", (sheet_w, sheet_h), (18, 20, 26))
+    draw = ImageDraw.Draw(sheet)
+
+    for idx, (lbl, tile) in enumerate(top_tiles):
+        x = pad + idx * (top_slot_w + pad)
+        draw.text((x, pad), lbl, fill=(215, 222, 234))
+        sheet.paste(tile, (x, pad + label_h))
+
+    y_zoom_start = pad + top_row_h + 16
+    for idx, (lbl, tile) in enumerate(zoom_tiles):
+        row = idx // cols
+        col = idx % cols
+        x = pad + col * (zoom_slot_w + pad)
+        y = y_zoom_start + row * (zoom_row_h + pad)
+        draw.text((x, y), lbl, fill=(140, 230, 165))
+        sheet.paste(tile, (x, y + label_h))
+
+    out_path = Path(args.output) if args.output else case_dir / "build" / "check" / "review_sheet.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(out_path)
+    print(f"[review-sheet] Saved {sheet.width} × {sheet.height} review sheet to {out_path}")
 
 
 def cmd_tile_preview(args: argparse.Namespace) -> None:
@@ -901,9 +1157,9 @@ def cmd_deliver(args: argparse.Namespace) -> None:
         hex_lines.append(f"{r:02x}{g:02x}{b:02x}")
         x0 = 12 + i * 54
         draw.rectangle([x0, 12, x0 + 44, 52], fill=(r, g, b), outline=(200, 200, 200))
-        pct = round(100.0 * counts[cidx] / total_fg, 1)
+        pct_str = format_palette_pct(counts[cidx], total_fg)
         draw.text((x0, 58), f"#{r:02X}{g:02X}{b:02X}", fill=(220, 225, 235))
-        draw.text((x0, 72), f"{pct}%", fill=(150, 160, 175))
+        draw.text((x0, 72), pct_str, fill=(150, 160, 175))
     card.save(deliver_dir / f"{case_name}_palette.png")
     (deliver_dir / f"{case_name}_palette.hex").write_text("\n".join(hex_lines) + "\n", encoding="utf-8")
 
@@ -1015,7 +1271,18 @@ def main() -> None:
 
     p_check = sub.add_parser("check", help="Evaluate quantitative metrics and generate check_sheet.png")
     p_check.add_argument("case_dir")
+    p_check.add_argument("--manual", action="store_true", help="Run pixel-hygiene checks for hand-drawn passes")
+    p_check.add_argument("--image", default=None, help="Optional image path for --manual checks (defaults to build/steps/04_cleanup.png)")
+    p_check.add_argument("--max-colors", type=int, default=None, help="Optional maximum allowed foreground palette color count for --manual checks")
     p_check.set_defaults(func=cmd_check)
+
+    p_review = sub.add_parser("review-sheet", help="Render a 1x and integer-zoomed review sheet from build steps")
+    p_review.add_argument("case_dir")
+    p_review.add_argument("--steps", default="auto", help="Comma-separated step numbers from 1..4, or 'auto' for all existing steps")
+    p_review.add_argument("--scale", type=int, default=4, help="Integer nearest-neighbor enlargement for zoomed panels")
+    p_review.add_argument("--output", default=None, help="Output PNG path (defaults to build/check/review_sheet.png)")
+    p_review.add_argument("--no-reference", action="store_true", help="Omit the reference subject panel")
+    p_review.set_defaults(func=cmd_review_sheet)
 
     p_tile = sub.add_parser("tile-preview", help="Inspect repeated tiles or centered wrap joins")
     p_tile.add_argument("--input", required=True, help="Native tile PNG")
